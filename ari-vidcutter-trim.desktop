@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Service
+MimeType=video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/x-flv;video/x-ms-wmv;video/mpeg;video/mp2t;video/x-m4v;
+Actions=TrimWithAri
+X-KDE-Priority=TopLevel
+
+[Desktop Action TrimWithAri]
+Name=Trim with Ari
+Icon=applications-multimedia
+Exec=ari-vidcutter %f
