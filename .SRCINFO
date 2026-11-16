@@ -1,0 +1,18 @@
+pkgbase = ari-vidcutter
+	pkgdesc = Simple video trimmer built with PySide6 and ffmpeg
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/yuans-dev/ari-vidcutter
+	arch = any
+	license = GPL-3.0-or-later
+	depends = python
+	depends = pyside6
+	depends = qt6-multimedia
+	depends = ffmpeg
+	optdepends = kvantum: Kvantum theme engine
+	source = ari.py
+	source = ari.desktop
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = ari-vidcutter

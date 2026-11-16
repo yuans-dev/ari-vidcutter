@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ari
+GenericName=Video Trimmer
+Comment=Trim videos with ffmpeg
+Exec=ari %f
+Icon=applications-multimedia
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;Qt;
+MimeType=video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/x-flv;video/x-ms-wmv;video/mpeg;video/mp2t;video/x-m4v;
+StartupWMClass=ari
