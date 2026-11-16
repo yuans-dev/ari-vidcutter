@@ -8,4 +8,4 @@ Icon=applications-multimedia
 Terminal=false
 Categories=AudioVideo;Video;AudioVideoEditing;Qt;
 MimeType=video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/x-flv;video/x-ms-wmv;video/mpeg;video/mp2t;video/x-m4v;
-StartupWMClass=ari
+StartupWMClass=ari-vidcutter
