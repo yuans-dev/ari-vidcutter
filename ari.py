@@ -11,6 +11,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -27,6 +28,19 @@ from PySide6.QtWidgets import (
 VIDEO_FILTER = "Video Files (*.mp4 *.mkv *.avi *.mov *.webm *.flv *.wmv *.m4v *.mpeg *.mpg *.ts)"
 THUMB_COUNT = 24
 THUMB_HEIGHT = 64
+
+# Compression presets (libx265 + AAC). "Maximum" is the reference command
+#   ffmpeg -i in.mp4 -c:v libx265 -crf 32 -preset slow -c:a aac -b:a 64k out.mp4
+# and the others step linearly towards higher quality / larger files.
+# (label, x265 CRF, x265 preset, AAC bitrate)
+COMPRESSION_PRESETS = [
+    ("Low compression", 23, "medium", "160k"),
+    ("Medium compression", 26, "medium", "128k"),
+    ("High compression", 29, "slow", "96k"),
+    ("Maximum compression", 32, "slow", "64k"),
+]
+DEFAULT_COMPRESSION_INDEX = 1
+COMPRESS_SUFFIXES = (".mp4", ".mkv", ".mov", ".m4v")
 
 
 def fmt_time(ms: int) -> str:
@@ -364,6 +378,20 @@ class MainWindow(QMainWindow):
 
         self.btn_export = QPushButton("Export")
 
+        self.cmb_compression = QComboBox()
+        for label, crf, preset, abr in COMPRESSION_PRESETS:
+            self.cmb_compression.addItem(label, (crf, preset, abr))
+            self.cmb_compression.setItemData(
+                self.cmb_compression.count() - 1,
+                f"libx265, CRF {crf}, preset {preset}, AAC {abr}",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        self.cmb_compression.setCurrentIndex(DEFAULT_COMPRESSION_INDEX)
+        self.cmb_compression.setToolTip("Compression level used by Compress")
+
+        self.btn_compress = QPushButton("Compress")
+        self.btn_compress.setToolTip("Trim, then re-encode with the selected compression preset")
+
         for w in (self.btn_prev, self.btn_play, self.btn_next):
             row.addWidget(w)
         row.addSpacing(12)
@@ -372,6 +400,9 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         row.addWidget(self.chk_reencode)
         row.addWidget(self.btn_export)
+        row.addSpacing(12)
+        row.addWidget(self.cmb_compression)
+        row.addWidget(self.btn_compress)
         controls.addLayout(row)
 
         self.time_label = QLabel()
@@ -392,6 +423,7 @@ class MainWindow(QMainWindow):
         self.btn_set_end.clicked.connect(
             lambda: self.slider.set_end(self.player.position()))
         self.btn_export.clicked.connect(self.export)
+        self.btn_compress.clicked.connect(self.compress)
 
         self.slider.positionChanged.connect(self.on_user_seek)
         self.slider.rangeChanged.connect(lambda *_: self.update_time_label())
@@ -408,7 +440,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def set_controls_enabled(self, on: bool):
         for w in (self.btn_prev, self.btn_play, self.btn_next, self.btn_set_start,
-                  self.btn_set_end, self.btn_export, self.chk_reencode):
+                  self.btn_set_end, self.chk_reencode):
+            w.setEnabled(on)
+        self.set_export_enabled(on)
+
+    def set_export_enabled(self, on: bool):
+        """Enable/disable everything that starts an ffmpeg job."""
+        for w in (self.btn_export, self.btn_compress, self.cmb_compression):
             w.setEnabled(on)
         self.save_action.setEnabled(on)
 
@@ -523,43 +561,93 @@ class MainWindow(QMainWindow):
         if not out_path:
             return
 
+        if self.chk_reencode.isChecked():
+            codec_args = []  # ffmpeg's default encoders for the container
+        else:
+            codec_args = ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+        self._run_ffmpeg(out_path, codec_args, "Exporting")
+
+    def compress(self):
+        """Trim to the selected range and compress with the chosen preset."""
+        if not self._path or self._proc is not None:
+            return
+        crf, preset, abr = self.cmb_compression.currentData()
+        src = Path(self._path)
+        default_path = str(src.with_name(f"{src.stem}_compressed.mp4"))
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Compressed Video", default_path,
+            "Video Files (*.mp4 *.mkv *.mov *.m4v)")
+        if not out_path:
+            return
+        out = Path(out_path)
+        if out.suffix.lower() not in COMPRESS_SUFFIXES:
+            # H.265 + AAC can't go in webm/avi/etc., so fall back to mp4
+            out = out.with_suffix(".mp4")
+
+        codec_args = ["-c:v", "libx265", "-crf", str(crf), "-preset", preset,
+                      "-x265-params", "log-level=error",  # x265 ignores ffmpeg's -v
+                      "-c:a", "aac", "-b:a", abr]
+        if out.suffix.lower() in (".mp4", ".mov", ".m4v"):
+            codec_args += ["-tag:v", "hvc1"]  # lets Apple players and browsers decode HEVC
+        self._run_ffmpeg(str(out), codec_args, "Compressing")
+
+    def _run_ffmpeg(self, out_path: str, codec_args: list, label: str):
+        """Cut [start, end] out of the source and encode it with codec_args.
+
+        -ss/-t are input-side options, so with a re-encode the trim is applied
+        first and only the selected range is compressed, in a single pass.
+        """
         start = self.slider.start() / 1000.0
         length = (self.slider.end() - self.slider.start()) / 1000.0
 
-        args = ["-y", "-ss", f"{start:.3f}", "-i", self._path, "-t", f"{length:.3f}"]
-        if self.chk_reencode.isChecked():
-            pass  # ffmpeg's default encoders for the container
-        else:
-            args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
-        args.append(out_path)
+        self._job_label = label
+        self._job_length_us = max(1, int(length * 1_000_000))
+        self._stdout_buf = ""
+
+        args = ["-y", "-v", "error", "-nostats", "-progress", "pipe:1",
+                "-ss", f"{start:.3f}", "-i", self._path, "-t", f"{length:.3f}",
+                *codec_args, out_path]
 
         self._proc = QProcess(self)
-        self._proc.finished.connect(self._export_finished)
-        self._proc.errorOccurred.connect(self._export_failed)
-        self.btn_export.setEnabled(False)
-        self.save_action.setEnabled(False)
-        self.statusBar().showMessage("Exporting...")
+        self._proc.readyReadStandardOutput.connect(self._on_progress)
+        self._proc.finished.connect(self._job_finished)
+        self._proc.errorOccurred.connect(self._job_failed)
+        self.set_export_enabled(False)
+        self.statusBar().showMessage(f"{label}...")
         self._proc.start("ffmpeg", args)
 
-    def _export_finished(self, code, _status):
+    def _on_progress(self):
+        self._stdout_buf += bytes(self._proc.readAllStandardOutput()).decode(errors="replace")
+        *lines, self._stdout_buf = self._stdout_buf.split("\n")
+        for line in lines:
+            if not line.startswith("out_time_us="):
+                continue
+            try:
+                done_us = int(line.split("=", 1)[1])
+            except ValueError:
+                continue  # "N/A" before the first frame
+            pct = max(0, min(99, done_us * 100 // self._job_length_us))
+            self.statusBar().showMessage(f"{self._job_label}... {pct}%")
+
+    def _job_finished(self, code, _status):
         err = bytes(self._proc.readAllStandardError()).decode(errors="replace")
+        label = self._job_label
         self._proc.deleteLater()
         self._proc = None
-        self.btn_export.setEnabled(True)
-        self.save_action.setEnabled(True)
+        self.set_export_enabled(True)
         if code == 0:
-            self.statusBar().showMessage("Export complete")
+            self.statusBar().showMessage(f"{label} finished")
         else:
-            self.statusBar().showMessage("Export failed")
-            QMessageBox.critical(self, "Export failed", err[-1500:] or f"ffmpeg exited with {code}")
+            self.statusBar().showMessage(f"{label} failed")
+            QMessageBox.critical(self, f"{label} failed",
+                                 err[-1500:] or f"ffmpeg exited with {code}")
 
-    def _export_failed(self, _error):
+    def _job_failed(self, _error):
         if self._proc is None or self._proc.state() != QProcess.ProcessState.NotRunning:
             return
         self._proc.deleteLater()
         self._proc = None
-        self.btn_export.setEnabled(True)
-        self.save_action.setEnabled(True)
+        self.set_export_enabled(True)
         self.statusBar().showMessage("Could not run ffmpeg")
 
     def closeEvent(self, event):

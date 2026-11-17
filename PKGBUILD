@@ -1,6 +1,6 @@
 
 pkgname=ari-vidcutter
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Simple video trimmer built with PySide6 and ffmpeg'
 arch=('any')
